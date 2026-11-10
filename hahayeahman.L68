@@ -1,0 +1,1541 @@
+00001000 Starting Address
+Assembler used: EASy68K Editor/Assembler v5.16.01
+Created On: 24/03/2026 09:39:27
+
+00000000                             1  ; Project: The Snake Fella
+00000000                             4  ; Date Created: 03/03/2026
+00000000                             5  * Description: Snake Game with Alternative Physics systems.
+00000000                             6  *
+00000000                             7  *   KEYBOARD NOTE:
+00000000                             8  *   Input is handled by polling task 19 inside READ_KEYS each
+00000000                             9  *   game tick. No interrupt vector or ENABLEKEYBOARD is used,
+00000000                            10  *   avoiding the SSP crash caused by RTE with no interrupt frame.
+00000000                            11  *
+00000000                            12  *   PHYSICS FEATURES:
+00000000                            13  *   1. DATA VALIDATION  - Difficulty select. Only 1/2/3 accepted.
+00000000                            14  *   2. RESOURCE USAGE   - Fuel drains at 0.5 per tick (every other
+00000000                            15  *                         tick via FUEL_TICK toggle). Restored by
+00000000                            16  *                         eating food. Zero fuel = dead.
+00000000                            17  *   3. HANDLING DAMAGE  - Wall Wrap + Shields. Crossing a wall
+00000000                            18  *                         teleports the snake and costs one shield.
+00000000                            19  *                         Zero shields on impact = dead.
+00000000                            20  *   4. DYNAMIC EVENTS   - Solar Flare. 1/32 chance per tick.
+00000000                            21  *                         2-second flashing warning before it
+00000000                            22  *                         activates. 7-second cooldown after it
+00000000                            23  *                         ends before it can trigger again.
+00000000                            24  *                         Controls reversed while active.
+00000000                            25  *                         Border: flashing yellow/green warning,
+00000000                            26  *                         solid yellow while active.
+00000000                            27  *   5. SPEED BOOST      - Space bar. 5-tick burst, halves delay.
+00000000                            28  *                         Costs extra fuel per tick.
+00000000                            29  *
+00000000                            30  *   Arrow Keys to steer, Space to Boost, ESC to quit.
+00000000                            31  *-----------------------------------------------------------
+00000000                            32  
+00001000                            33      ORG     $1000
+00001000                            34  
+00001000                            35  START:
+00001000                            36  
+00001000                            37  *-----------------------------------------------------------
+00001000                            38  * Section       : Trap Codes
+00001000                            39  *-----------------------------------------------------------
+00001000                            40  
+00001000  =00000021                 41  TC_SCREEN   EQU         33
+00001000  =00000013                 42  TC_KEYCODE  EQU         19
+00001000  =0000005C                 43  TC_DBL_BUF  EQU         92
+00001000  =0000000B                 44  TC_CURSR_P  EQU         11
+00001000  =00000009                 45  TC_EXIT     EQU         09
+00001000                            46  
+00001000                            47  *-----------------------------------------------------------
+00001000                            48  * Section       : Game Constants
+00001000                            49  *-----------------------------------------------------------
+00001000                            50  
+00001000  =00000014                 51  CELL_SIZE   EQU         20
+00001000  =00000020                 52  GRID_MAX    EQU         32
+00001000  =00000280                 53  SCREEN_PX   EQU         640
+00001000                            54  
+00001000  =00000071                 55  ESCAPE_LO   EQU         $71         ; 'q' lowercase - Easy68k swallows $1B
+00001000  =00000051                 56  ESCAPE_HI   EQU         $51         ; 'Q' uppercase - accept either
+00001000  =00000020                 57  SPACE       EQU         $20
+00001000                            58  
+00001000  =00000001                 59  DIR_LEFT    EQU         1
+00001000  =00000002                 60  DIR_UP      EQU         2
+00001000  =00000003                 61  DIR_RIGHT   EQU         3
+00001000  =00000004                 62  DIR_DOWN    EQU         4
+00001000                            63  
+00001000  =00000001                 64  POINTS      EQU         1
+00001000  =00000002                 65  OPPS_INDEX  EQU         02
+00001000  =0000001E                 66  MAX_SNAKE   EQU         30
+00001000                            67  
+00001000                            68  *-----------------------------------------------------------
+00001000                            69  * Section       : Speed Constants
+00001000                            70  *-----------------------------------------------------------
+00001000                            71  
+00001000  =00005000                 72  SPEED_INC   EQU         $5000
+00001000  =00008000                 73  MIN_DELAY   EQU         $8000
+00001000                            74  
+00001000                            75  *-----------------------------------------------------------
+00001000                            76  * Section       : Difficulty Constants
+00001000                            77  *-----------------------------------------------------------
+00001000                            78  
+00001000  =00000001                 79  DIFF_EASY   EQU         1
+00001000  =00000002                 80  DIFF_MED    EQU         2
+00001000  =00000003                 81  DIFF_HARD   EQU         3
+00001000                            82  
+00001000  =0003FFFF                 83  DLY_EASY    EQU         $3FFFF
+00001000  =00025000                 84  DLY_MED     EQU         $25000
+00001000  =00010000                 85  DLY_HARD    EQU         $10000
+00001000                            86  
+00001000  =00000064                 87  FUEL_EASY   EQU         100
+00001000  =0000004B                 88  FUEL_MED    EQU         75
+00001000  =00000032                 89  FUEL_HARD   EQU         50
+00001000                            90  
+00001000  =00000003                 91  SHLD_EASY   EQU         3
+00001000  =00000002                 92  SHLD_MED    EQU         2
+00001000  =00000001                 93  SHLD_HARD   EQU         1
+00001000                            94  
+00001000                            95  *-----------------------------------------------------------
+00001000                            96  * Section       : Alternative Physics Constants
+00001000                            97  *-----------------------------------------------------------
+00001000                            98  
+00001000                            99  * Fuel
+00001000                           100  * FUEL_TICK toggle means drain of 1 every OTHER tick = 0.5/tick
+00001000  =00000014                101  FUEL_EAT    EQU         20          ; Fuel restored per food eaten
+00001000  =00000064                102  FUEL_MAX    EQU         100
+00001000                           103  
+00001000                           104  * Solar Flare
+00001000                           105  * Tick counts are calibrated against the Easy/Medium delay loop.
+00001000                           106  * At DLY_EASY (~$3FFFF loop) ~8 ticks/sec -> 16 ticks ~ 2 sec warning
+00001000                           107  *                                           -> 56 ticks ~ 7 sec cooldown
+00001000  =00000019                108  FLARE_TICKS     EQU     25          ; Duration of active flare (ticks)
+00001000  =00000010                109  FLARE_WARN_TICKS EQU    16          ; Warning flash before activation (~2 sec)
+00001000  =00000038                110  FLARE_COOL_TICKS EQU    56          ; Cooldown after flare ends (~7 sec)
+00001000                           111  
+00001000                           112  * Boost
+00001000  =00000005                113  BOOST_TICKS EQU         5
+00001000  =00000003                114  BOOST_EXTRA EQU         3
+00001000                           115  
+00001000                           116  *-----------------------------------------------------------
+00001000                           117  * Section       : Graphic Colours  ($00BBGGRR in Easy68k)
+00001000                           118  *-----------------------------------------------------------
+00001000                           119  
+00001000  =00FFFFFF                120  WHITE       EQU         $00FFFFFF
+00001000  =0000CC00                121  SNAKEGREEN  EQU         $0000CC00
+00001000  =000000CC                122  RED         EQU         $000000CC
+00001000  =00003300                123  DARKGREEN   EQU         $00003300
+00001000  =0000CCCC                124  YELLOW      EQU         $0000CCCC
+00001000                           125  
+00001000                           126  *-----------------------------------------------------------
+00001000                           127  * Subroutine    : Initialise
+00001000                           128  *-----------------------------------------------------------
+00001000                           129  
+00001000                           130  INITIALISE:
+00001000                           131  
+00001000  4EB9 00001A8E            132      JSR     SETSCREEN
+00001006                           133  
+00001006  6100 00B8                134      BSR     DIFFICULTY_SELECT
+0000100A  6100 0190                135      BSR     APPLY_DIFFICULTY
+0000100E                           136  
+0000100E  6100 0A60                137      BSR     OPPS_LOAD
+00001012                           138  
+00001012  4281                     139      CLR.L   D1
+00001014  23C1 00001CE0            140      MOVE.L  D1,         PLAYER_SCORE
+0000101A                           141  
+0000101A  13FC 0010 00001CE4       142      MOVE.B  #16,        SNAKE_X
+00001022  13FC 0010 00001CE5       143      MOVE.B  #16,        SNAKE_Y
+0000102A  13FC 0003 00001CE6       144      MOVE.B  #DIR_RIGHT, SNAKE_DIR
+00001032                           145  
+00001032  13FC 0001 00001CE7       146      MOVE.B  #1,         SNAKE_LEN
+0000103A  13FC 0010 00001CFA       147      MOVE.B  #16,        BODY_X
+00001042  13FC 0010 00001D18       148      MOVE.B  #16,        BODY_Y
+0000104A                           149  
+0000104A                           150      ; Clear all physics flags / timers
+0000104A  4239 00001CF0            151      CLR.B   FUEL_TICK
+00001050  4239 00001CF2            152      CLR.B   FLARE_ACTIVE
+00001056  4239 00001CF3            153      CLR.B   FLARE_TIMER
+0000105C  4239 00001CF4            154      CLR.B   FLARE_WARNING
+00001062  4239 00001CF5            155      CLR.B   FLARE_WARN_TIMER
+00001068  4239 00001CF6            156      CLR.B   FLARE_COOLDOWN
+0000106E  4239 00001CF7            157      CLR.B   WARN_FLASH
+00001074  4239 00001CF8            158      CLR.B   BOOST_ACTIVE
+0000107A  4239 00001CF9            159      CLR.B   BOOST_TIMER
+00001080                           160  
+00001080  4EB9 00001ADE            161      JSR     PLACEFOOD
+00001086                           162  
+00001086  103C 005C                163      MOVE.B  #TC_DBL_BUF,D0
+0000108A  123C 0011                164      MOVE.B  #17,        D1
+0000108E  4E4F                     165      TRAP    #15
+00001090                           166  
+00001090  103C 000B                167      MOVE.B  #TC_CURSR_P,D0
+00001094  323C FF00                168      MOVE.W  #$FF00,     D1
+00001098  4E4F                     169      TRAP    #15
+0000109A                           170  
+0000109A                           171  *-----------------------------------------------------------
+0000109A                           172  * Subroutine    : Game / GameLoop
+0000109A                           173  *-----------------------------------------------------------
+0000109A                           174  
+0000109A                           175  GAME:
+0000109A  6100 016A                176      BSR     DRAW_TITLE
+0000109E                           177  
+0000109E                           178  GAMELOOP:
+0000109E  6100 0620                179      BSR     DYNAMIC_DELAY
+000010A2  6100 01DE                180      BSR     READ_KEYS
+000010A6  6100 0280                181      BSR     UPDATE
+000010AA  6100 037A                182      BSR     CHECK_BOUNDS_WRAP
+000010AE  6100 03FE                183      BSR     CHECK_SELF_COLLISION    
+000010B2  6100 046C                184      BSR     CHECK_FOOD
+000010B6  6100 04F0                185      BSR     TICK_PHYSICS
+000010BA  6100 0626                186      BSR     DRAW
+000010BE  60DE                     187      BRA     GAMELOOP
+000010C0                           188  
+000010C0                           189  *-----------------------------------------------------------
+000010C0                           190  * Subroutine    : Difficulty Select
+000010C0                           191  * Description   : DATA VALIDATION - only 1, 2 or 3 accepted.
+000010C0                           192  *                 All other keys rejected silently.
+000010C0                           193  *-----------------------------------------------------------
+000010C0                           194  
+000010C0                           195  DIFFICULTY_SELECT:
+000010C0                           196  
+000010C0  103C 000B                197      MOVE.B  #TC_CURSR_P,D0
+000010C4  323C FF00                198      MOVE.W  #$FF00,     D1
+000010C8  4E4F                     199      TRAP    #15
+000010CA                           200  
+000010CA  103C 000B                201      MOVE.B  #TC_CURSR_P,D0
+000010CE  323C 1408                202      MOVE.W  #$1408,     D1          ; Col 20, Row 8
+000010D2  4E4F                     203      TRAP    #15
+000010D4  43F9 00001B14            204      LEA     DIFF_TITLE_MSG,A1
+000010DA  303C 000D                205      MOVE    #13,        D0
+000010DE  4E4F                     206      TRAP    #15
+000010E0                           207  
+000010E0  103C 000B                208      MOVE.B  #TC_CURSR_P,D0
+000010E4  323C 140A                209      MOVE.W  #$140A,     D1          ; Col 20, Row 10
+000010E8  4E4F                     210      TRAP    #15
+000010EA  43F9 00001B27            211      LEA     DIFF_SEL_MSG,A1
+000010F0  303C 000D                212      MOVE    #13,        D0
+000010F4  4E4F                     213      TRAP    #15
+000010F6                           214  
+000010F6  103C 000B                215      MOVE.B  #TC_CURSR_P,D0
+000010FA  323C 100C                216      MOVE.W  #$100C,     D1          ; Col 16, Row 12
+000010FE  4E4F                     217      TRAP    #15
+00001100  43F9 00001B3B            218      LEA     DIFF_EASY_MSG,A1
+00001106  303C 000D                219      MOVE    #13,        D0
+0000110A  4E4F                     220      TRAP    #15
+0000110C                           221  
+0000110C  103C 000B                222      MOVE.B  #TC_CURSR_P,D0
+00001110  323C 100D                223      MOVE.W  #$100D,     D1          ; Col 16, Row 13
+00001114  4E4F                     224      TRAP    #15
+00001116  43F9 00001B69            225      LEA     DIFF_MED_MSG,A1
+0000111C  303C 000D                226      MOVE    #13,        D0
+00001120  4E4F                     227      TRAP    #15
+00001122                           228  
+00001122  103C 000B                229      MOVE.B  #TC_CURSR_P,D0
+00001126  323C 100E                230      MOVE.W  #$100E,     D1          ; Col 16, Row 14
+0000112A  4E4F                     231      TRAP    #15
+0000112C  43F9 00001B97            232      LEA     DIFF_HARD_MSG,A1
+00001132  303C 000D                233      MOVE    #13,        D0
+00001136  4E4F                     234      TRAP    #15
+00001138                           235  
+00001138  103C 000B                236      MOVE.B  #TC_CURSR_P,D0
+0000113C  323C 1210                237      MOVE.W  #$1210,     D1          ; Col 18, Row 16
+00001140  4E4F                     238      TRAP    #15
+00001142  43F9 00001BC5            239      LEA     DIFF_PRMPT_MSG,A1
+00001148  303C 000D                240      MOVE    #13,        D0
+0000114C  4E4F                     241      TRAP    #15
+0000114E                           242  
+0000114E                           243  DIFF_WAIT:
+0000114E  4281                     244      CLR.L   D1
+00001150  103C 0013                245      MOVE.B  #TC_KEYCODE,D0
+00001154  4E4F                     246      TRAP    #15
+00001156  B23C 0031                247      CMP.B   #$31,       D1          ; '1'
+0000115A  6700 0014                248      BEQ     DIFF_CHOOSE_1
+0000115E  B23C 0032                249      CMP.B   #$32,       D1          ; '2'
+00001162  6700 0018                250      BEQ     DIFF_CHOOSE_2
+00001166  B23C 0033                251      CMP.B   #$33,       D1          ; '3'
+0000116A  6700 001C                252      BEQ     DIFF_CHOOSE_3
+0000116E  60DE                     253      BRA     DIFF_WAIT
+00001170                           254  
+00001170                           255  DIFF_CHOOSE_1:
+00001170  13FC 0001 00001CEE       256      MOVE.B  #DIFF_EASY, DIFFICULTY
+00001178  6000 0016                257      BRA     DIFF_DONE
+0000117C                           258  DIFF_CHOOSE_2:
+0000117C  13FC 0002 00001CEE       259      MOVE.B  #DIFF_MED,  DIFFICULTY
+00001184  6000 000A                260      BRA     DIFF_DONE
+00001188                           261  DIFF_CHOOSE_3:
+00001188  13FC 0003 00001CEE       262      MOVE.B  #DIFF_HARD, DIFFICULTY
+00001190                           263  
+00001190                           264  DIFF_DONE:
+00001190  103C 000B                265      MOVE.B  #TC_CURSR_P,D0
+00001194  323C FF00                266      MOVE.W  #$FF00,     D1
+00001198  4E4F                     267      TRAP    #15
+0000119A  4E75                     268      RTS
+0000119C                           269  
+0000119C                           270  *-----------------------------------------------------------
+0000119C                           271  * Subroutine    : Apply Difficulty
+0000119C                           272  *-----------------------------------------------------------
+0000119C                           273  
+0000119C                           274  APPLY_DIFFICULTY:
+0000119C  1239 00001CEE            275      MOVE.B  DIFFICULTY, D1
+000011A2  B23C 0001                276      CMP.B   #DIFF_EASY, D1
+000011A6  6700 0042                277      BEQ     APD_EASY
+000011AA  B23C 0002                278      CMP.B   #DIFF_MED,  D1
+000011AE  6700 001E                279      BEQ     APD_MED
+000011B2                           280  
+000011B2                           281  APD_HARD:
+000011B2  23FC 00010000 00001CEA   282      MOVE.L  #DLY_HARD,  DELAY_COUNT
+000011BC  13FC 0032 00001CEF       283      MOVE.B  #FUEL_HARD, FUEL
+000011C4  13FC 0001 00001CF1       284      MOVE.B  #SHLD_HARD, SHIELD
+000011CC  4E75                     285      RTS
+000011CE                           286  
+000011CE                           287  APD_MED:
+000011CE  23FC 00025000 00001CEA   288      MOVE.L  #DLY_MED,   DELAY_COUNT
+000011D8  13FC 004B 00001CEF       289      MOVE.B  #FUEL_MED,  FUEL
+000011E0  13FC 0002 00001CF1       290      MOVE.B  #SHLD_MED,  SHIELD
+000011E8  4E75                     291      RTS
+000011EA                           292  
+000011EA                           293  APD_EASY:
+000011EA  23FC 0003FFFF 00001CEA   294      MOVE.L  #DLY_EASY,  DELAY_COUNT
+000011F4  13FC 0064 00001CEF       295      MOVE.B  #FUEL_EASY, FUEL
+000011FC  13FC 0003 00001CF1       296      MOVE.B  #SHLD_EASY, SHIELD
+00001204  4E75                     297      RTS
+00001206                           298  
+00001206                           299  *-----------------------------------------------------------
+00001206                           300  * Subroutine    : Draw Title
+00001206                           301  *-----------------------------------------------------------
+00001206                           302  
+00001206                           303  DRAW_TITLE:
+00001206  103C 000B                304      MOVE.B  #TC_CURSR_P,D0
+0000120A  323C 100A                305      MOVE.W  #$100A,     D1
+0000120E  4E4F                     306      TRAP    #15
+00001210  43F9 00001BE1            307      LEA     TITLE_MSG,  A1
+00001216  303C 000D                308      MOVE    #13,        D0
+0000121A  4E4F                     309      TRAP    #15
+0000121C                           310  
+0000121C  103C 000B                311      MOVE.B  #TC_CURSR_P,D0
+00001220  323C 0C0C                312      MOVE.W  #$0C0C,     D1
+00001224  4E4F                     313      TRAP    #15
+00001226  43F9 00001BF4            314      LEA     CTRL_MSG,   A1
+0000122C  303C 000D                315      MOVE    #13,        D0
+00001230  4E4F                     316      TRAP    #15
+00001232                           317  
+00001232  103C 000B                318      MOVE.B  #TC_CURSR_P,D0
+00001236  323C 0C0D                319      MOVE.W  #$0C0D,     D1
+0000123A  4E4F                     320      TRAP    #15
+0000123C  43F9 00001C15            321      LEA     BOOST_TIP_MSG,A1
+00001242  303C 000D                322      MOVE    #13,        D0
+00001246  4E4F                     323      TRAP    #15
+00001248                           324  
+00001248  103C 000B                325      MOVE.B  #TC_CURSR_P,D0
+0000124C  323C 0E0E                326      MOVE.W  #$0E0E,     D1
+00001250  4E4F                     327      TRAP    #15
+00001252  43F9 00001C37            328      LEA     QUIT_MSG,   A1
+00001258  303C 000D                329      MOVE    #13,        D0
+0000125C  4E4F                     330      TRAP    #15
+0000125E                           331  
+0000125E  4EB9 00001AC8            332      JSR     DELAY
+00001264  4EB9 00001AC8            333      JSR     DELAY
+0000126A  4EB9 00001AC8            334      JSR     DELAY
+00001270  4EB9 00001AC8            335      JSR     DELAY
+00001276                           336  
+00001276  103C 000B                337      MOVE.B  #TC_CURSR_P,D0
+0000127A  323C FF00                338      MOVE.W  #$FF00,     D1
+0000127E  4E4F                     339      TRAP    #15
+00001280  4E75                     340      RTS
+00001282                           341  
+00001282                           342  *-----------------------------------------------------------
+00001282                           343  * Subroutine    : Read Keys
+00001282                           344  * Description   : Polls task 19. Handles ESC, Space (boost),
+00001282                           345  *                 and arrow keys. SPACE must be checked before
+00001282                           346  *                 the arrow chain because $20 < $25.
+00001282                           347  *-----------------------------------------------------------
+00001282                           348  
+00001282                           349  READ_KEYS:
+00001282  4281                     350      CLR.L   D1
+00001284  103C 0013                351      MOVE.B  #TC_KEYCODE,D0
+00001288  4E4F                     352      TRAP    #15
+0000128A                           353  
+0000128A  4A01                     354      TST.B   D1
+0000128C  6700 003A                355      BEQ     RK_DONE                 ; 0 = no key yet
+00001290                           356  
+00001290                           357      ; Easy68k swallows $1B at simulator level so Q/q is used to quit
+00001290  B23C 0071                358      CMP.B   #ESCAPE_LO, D1          ; 'q' lowercase ?
+00001294  6700 07BA                359      BEQ     EXIT
+00001298  B23C 0051                360      CMP.B   #ESCAPE_HI, D1          ; 'Q' uppercase ?
+0000129C  6700 07B2                361      BEQ     EXIT
+000012A0                           362  
+000012A0  B23C 0020                363      CMP.B   #SPACE,     D1          ; MUST be before arrow chain ($20 < $25)
+000012A4  6700 004C                364      BEQ     RK_BOOST
+000012A8  B23C 0025                365      CMP.B   #$25,       D1
+000012AC  6700 001C                366      BEQ     RK_LEFT
+000012B0  B23C 0026                367      CMP.B   #$26,       D1
+000012B4  6700 001E                368      BEQ     RK_UP
+000012B8  B23C 0027                369      CMP.B   #$27,       D1
+000012BC  6700 0020                370      BEQ     RK_RIGHT
+000012C0  B23C 0028                371      CMP.B   #$28,       D1
+000012C4  6700 0022                372      BEQ     RK_DOWN
+000012C8                           373  
+000012C8                           374  RK_DONE:
+000012C8  4E75                     375      RTS
+000012CA                           376  
+000012CA                           377  RK_LEFT:
+000012CA  13FC 0001 00001CE6       378      MOVE.B  #DIR_LEFT,  SNAKE_DIR
+000012D2  4E75                     379      RTS
+000012D4                           380  RK_UP:
+000012D4  13FC 0002 00001CE6       381      MOVE.B  #DIR_UP,    SNAKE_DIR
+000012DC  4E75                     382      RTS
+000012DE                           383  RK_RIGHT:
+000012DE  13FC 0003 00001CE6       384      MOVE.B  #DIR_RIGHT, SNAKE_DIR
+000012E6  4E75                     385      RTS
+000012E8                           386  RK_DOWN:
+000012E8  13FC 0004 00001CE6       387      MOVE.B  #DIR_DOWN,  SNAKE_DIR
+000012F0  4E75                     388      RTS
+000012F2                           389  
+000012F2                           390  RK_BOOST:
+000012F2                           391      ; Space toggles boost. Pressing again while active turns it OFF.
+000012F2                           392      ; Turning ON requires enough fuel for at least one boosted tick.
+000012F2  4A39 00001CF8            393      TST.B   BOOST_ACTIVE
+000012F8  6600 0020                394      BNE     RK_BOOST_OFF            ; Already on: turn off
+000012FC                           395  
+000012FC                           396      ; --- Turn boost ON ---
+000012FC  1239 00001CEF            397      MOVE.B  FUEL,       D1
+00001302  B23C 0003                398      CMP.B   #BOOST_EXTRA,D1
+00001306  6DC0                     399      BLT     RK_DONE                 ; Not enough fuel: ignore
+00001308  13FC 0001 00001CF8       400      MOVE.B  #1,         BOOST_ACTIVE
+00001310  13FC 0005 00001CF9       401      MOVE.B  #BOOST_TICKS,BOOST_TIMER
+00001318  4E75                     402      RTS
+0000131A                           403  
+0000131A                           404  RK_BOOST_OFF:
+0000131A                           405      ; --- Turn boost OFF immediately ---
+0000131A  4239 00001CF8            406      CLR.B   BOOST_ACTIVE
+00001320  4239 00001CF9            407      CLR.B   BOOST_TIMER
+00001326  4E75                     408      RTS
+00001328                           409  
+00001328                           410  *-----------------------------------------------------------
+00001328                           411  * Subroutine    : Update
+00001328                           412  * Description   : Shifts body trail, optionally flips direction
+00001328                           413  *                 for Solar Flare (active only, not warning),
+00001328                           414  *                 then moves the head. Syncs body[0].
+00001328                           415  *-----------------------------------------------------------
+00001328                           416  
+00001328                           417  UPDATE:
+00001328  6100 00A4                418      BSR     SHIFT_BODY
+0000132C                           419  
+0000132C  1239 00001CE6            420      MOVE.B  SNAKE_DIR,  D1
+00001332                           421  
+00001332                           422      ; Reverse controls only while flare is ACTIVE, not during warning
+00001332  4A39 00001CF2            423      TST.B   FLARE_ACTIVE
+00001338  6700 0036                424      BEQ     UPDATE_MOVE
+0000133C                           425  
+0000133C  B23C 0001                426      CMP.B   #DIR_LEFT,  D1
+00001340  6700 001A                427      BEQ     UPD_FLIP_R
+00001344  B23C 0003                428      CMP.B   #DIR_RIGHT, D1
+00001348  6700 001A                429      BEQ     UPD_FLIP_L
+0000134C  B23C 0002                430      CMP.B   #DIR_UP,    D1
+00001350  6700 001A                431      BEQ     UPD_FLIP_D
+00001354  123C 0002                432      MOVE.B  #DIR_UP,    D1          ; Was DOWN -> flip UP
+00001358  6000 0016                433      BRA     UPDATE_MOVE
+0000135C                           434  
+0000135C                           435  UPD_FLIP_R:
+0000135C  123C 0003                436      MOVE.B  #DIR_RIGHT, D1
+00001360  6000 000E                437      BRA     UPDATE_MOVE
+00001364                           438  UPD_FLIP_L:
+00001364  123C 0001                439      MOVE.B  #DIR_LEFT,  D1
+00001368  6000 0006                440      BRA     UPDATE_MOVE
+0000136C                           441  UPD_FLIP_D:
+0000136C  123C 0004                442      MOVE.B  #DIR_DOWN,  D1
+00001370                           443  
+00001370                           444  UPDATE_MOVE:
+00001370  B23C 0001                445      CMP.B   #DIR_LEFT,  D1
+00001374  6700 001E                446      BEQ     DO_MOVE_LEFT
+00001378  B23C 0002                447      CMP.B   #DIR_UP,    D1
+0000137C  6700 0020                448      BEQ     DO_MOVE_UP
+00001380  B23C 0003                449      CMP.B   #DIR_RIGHT, D1
+00001384  6700 0022                450      BEQ     DO_MOVE_RIGHT
+00001388  B23C 0004                451      CMP.B   #DIR_DOWN,  D1
+0000138C  6700 0024                452      BEQ     DO_MOVE_DOWN
+00001390  6000 0026                453      BRA     UPDATE_STORE_HEAD
+00001394                           454  
+00001394                           455  DO_MOVE_LEFT:
+00001394  5339 00001CE4            456      SUB.B   #1,         SNAKE_X
+0000139A  6000 001C                457      BRA     UPDATE_STORE_HEAD
+0000139E                           458  DO_MOVE_UP:
+0000139E  5339 00001CE5            459      SUB.B   #1,         SNAKE_Y
+000013A4  6000 0012                460      BRA     UPDATE_STORE_HEAD
+000013A8                           461  DO_MOVE_RIGHT:
+000013A8  5239 00001CE4            462      ADD.B   #1,         SNAKE_X
+000013AE  6000 0008                463      BRA     UPDATE_STORE_HEAD
+000013B2                           464  DO_MOVE_DOWN:
+000013B2  5239 00001CE5            465      ADD.B   #1,         SNAKE_Y
+000013B8                           466  
+000013B8                           467  UPDATE_STORE_HEAD:
+000013B8  13F9 00001CE4 00001CFA   468      MOVE.B  SNAKE_X,    BODY_X
+000013C2  13F9 00001CE5 00001D18   469      MOVE.B  SNAKE_Y,    BODY_Y
+000013CC  4E75                     470      RTS
+000013CE                           471  
+000013CE                           472  *-----------------------------------------------------------
+000013CE                           473  * Subroutine    : Shift Body
+000013CE                           474  *-----------------------------------------------------------
+000013CE                           475  
+000013CE                           476  SHIFT_BODY:
+000013CE  48E7 F880                477      MOVEM.L D0-D4/A0,   -(SP)
+000013D2                           478  
+000013D2  4280                     479      CLR.L   D0
+000013D4  1039 00001CE7            480      MOVE.B  SNAKE_LEN,  D0
+000013DA  B03C 0002                481      CMP.B   #2,         D0
+000013DE  6D00 0040                482      BLT     SHIFT_BODY_DONE
+000013E2                           483  
+000013E2  1200                     484      MOVE.B  D0,         D1
+000013E4  5301                     485      SUB.B   #1,         D1
+000013E6                           486  
+000013E6                           487  SHIFT_LOOP_B:
+000013E6  4282                     488      CLR.L   D2
+000013E8  1401                     489      MOVE.B  D1,         D2
+000013EA  4283                     490      CLR.L   D3
+000013EC  1601                     491      MOVE.B  D1,         D3
+000013EE  5303                     492      SUB.B   #1,         D3
+000013F0                           493  
+000013F0  41F9 00001CFA            494      LEA     BODY_X,     A0
+000013F6  D0C3                     495      ADDA.W  D3,         A0
+000013F8  1810                     496      MOVE.B  (A0),       D4
+000013FA  41F9 00001CFA            497      LEA     BODY_X,     A0
+00001400  D0C2                     498      ADDA.W  D2,         A0
+00001402  1084                     499      MOVE.B  D4,         (A0)
+00001404                           500  
+00001404  41F9 00001D18            501      LEA     BODY_Y,     A0
+0000140A  D0C3                     502      ADDA.W  D3,         A0
+0000140C  1810                     503      MOVE.B  (A0),       D4
+0000140E  41F9 00001D18            504      LEA     BODY_Y,     A0
+00001414  D0C2                     505      ADDA.W  D2,         A0
+00001416  1084                     506      MOVE.B  D4,         (A0)
+00001418                           507  
+00001418  5301                     508      SUB.B   #1,         D1
+0000141A  B23C 0001                509      CMP.B   #1,         D1
+0000141E  6CC6                     510      BGE     SHIFT_LOOP_B
+00001420                           511  
+00001420                           512  SHIFT_BODY_DONE:
+00001420  4CDF 011F                513      MOVEM.L (SP)+,      D0-D4/A0
+00001424  4E75                     514      RTS
+00001426                           515  
+00001426                           516  *-----------------------------------------------------------
+00001426                           517  * Subroutine    : Check Bounds Wrap
+00001426                           518  * Description   : HANDLING DAMAGE - wall crossing teleports
+00001426                           519  *                 the snake and costs one shield.
+00001426                           520  *-----------------------------------------------------------
+00001426                           521  
+00001426                           522  CHECK_BOUNDS_WRAP:
+00001426                           523  
+00001426  4281                     524      CLR.L   D1
+00001428  1239 00001CE4            525      MOVE.B  SNAKE_X,    D1
+0000142E  B23C 0020                526      CMP.B   #GRID_MAX,  D1
+00001432  6C00 0024                527      BGE     WRAP_RIGHT
+00001436  B23C 0000                528      CMP.B   #0,         D1
+0000143A  6D00 0028                529      BLT     WRAP_LEFT
+0000143E                           530  
+0000143E  4281                     531      CLR.L   D1
+00001440  1239 00001CE5            532      MOVE.B  SNAKE_Y,    D1
+00001446  B23C 0020                533      CMP.B   #GRID_MAX,  D1
+0000144A  6C00 0024                534      BGE     WRAP_BOTTOM
+0000144E  B23C 0000                535      CMP.B   #0,         D1
+00001452  6D00 0028                536      BLT     WRAP_TOP
+00001456                           537  
+00001456  4E75                     538      RTS
+00001458                           539  
+00001458                           540  WRAP_RIGHT:
+00001458  13FC 0000 00001CE4       541      MOVE.B  #0,         SNAKE_X
+00001460  6000 0022                542      BRA     WALL_PENALTY
+00001464                           543  WRAP_LEFT:
+00001464  13FC 001F 00001CE4       544      MOVE.B  #31,        SNAKE_X
+0000146C  6000 0016                545      BRA     WALL_PENALTY
+00001470                           546  WRAP_BOTTOM:
+00001470  13FC 0000 00001CE5       547      MOVE.B  #0,         SNAKE_Y
+00001478  6000 000A                548      BRA     WALL_PENALTY
+0000147C                           549  WRAP_TOP:
+0000147C  13FC 001F 00001CE5       550      MOVE.B  #31,        SNAKE_Y
+00001484                           551  
+00001484                           552  WALL_PENALTY:
+00001484  13F9 00001CE4 00001CFA   553      MOVE.B  SNAKE_X,    BODY_X
+0000148E  13F9 00001CE5 00001D18   554      MOVE.B  SNAKE_Y,    BODY_Y
+00001498                           555  
+00001498  4A39 00001CF1            556      TST.B   SHIELD
+0000149E  6700 0536                557      BEQ     DEAD
+000014A2  5339 00001CF1            558      SUB.B   #1,         SHIELD
+000014A8  6100 05D8                559      BSR     PLAY_OPPS
+000014AC  4E75                     560      RTS
+000014AE                           561  
+000014AE                           562  *-----------------------------------------------------------
+000014AE                           563  * Subroutine    : Check Self Collision
+000014AE                           564  * Description   : HANDLING DAMAGE extension.
+000014AE                           565  *                 After the head has moved, compare it against
+000014AE                           566  *                 every body segment from index 2 to LEN-1.
+000014AE                           567  *                 Index 0 is the head itself.
+000014AE                           568  *                 Index 1 is the neck - the cell the head just
+000014AE                           569  *                 left - which is always adjacent and can never
+000014AE                           570  *                 cause a real self-collision, so it is skipped.
+000014AE                           571  *                 On a hit the same shield/dead logic used for
+000014AE                           572  *                 wall contact applies: spend one shield (with
+000014AE                           573  *                 sound) or end the game if shields are empty.
+000014AE                           574  *                 Registers used: D0=length, D1=loop index,
+000014AE                           575  *                 D2=head X, D3=head Y, D4=segment byte, A0=ptr.
+000014AE                           576  *                 All saved and restored via MOVEM.
+000014AE                           577  *-----------------------------------------------------------
+000014AE                           578  
+000014AE                           579  CHECK_SELF_COLLISION:
+000014AE  48E7 F880                580      MOVEM.L D0-D4/A0,   -(SP)
+000014B2                           581  
+000014B2  4280                     582      CLR.L   D0
+000014B4  1039 00001CE7            583      MOVE.B  SNAKE_LEN,  D0
+000014BA  B03C 0003                584      CMP.B   #3,         D0          ; Need at least 3 segments to
+000014BE  6D00 0040                585      BLT     CSC_DONE                ; be able to collide with body
+000014C2                           586  
+000014C2  4282                     587      CLR.L   D2
+000014C4  4283                     588      CLR.L   D3
+000014C6  1439 00001CE4            589      MOVE.B  SNAKE_X,    D2          ; D2 = head X
+000014CC  1639 00001CE5            590      MOVE.B  SNAKE_Y,    D3          ; D3 = head Y
+000014D2                           591  
+000014D2  123C 0002                592      MOVE.B  #2,         D1          ; Start checking from index 2
+000014D6                           593  
+000014D6                           594  CSC_LOOP:
+000014D6  4284                     595      CLR.L   D4
+000014D8  41F9 00001CFA            596      LEA     BODY_X,     A0
+000014DE  D0C1                     597      ADDA.W  D1,         A0
+000014E0  1810                     598      MOVE.B  (A0),       D4          ; D4 = BODY_X[i]
+000014E2  B802                     599      CMP.B   D2,         D4          ; Matches head X?
+000014E4  6600 0014                600      BNE     CSC_NEXT
+000014E8                           601  
+000014E8  4284                     602      CLR.L   D4
+000014EA  41F9 00001D18            603      LEA     BODY_Y,     A0
+000014F0  D0C1                     604      ADDA.W  D1,         A0
+000014F2  1810                     605      MOVE.B  (A0),       D4          ; D4 = BODY_Y[i]
+000014F4  B803                     606      CMP.B   D3,         D4          ; Matches head Y?
+000014F6  6700 000E                607      BEQ     CSC_HIT                 ; Both match: self-collision!
+000014FA                           608  
+000014FA                           609  CSC_NEXT:
+000014FA  5201                     610      ADD.B   #1,         D1
+000014FC  B200                     611      CMP.B   D0,         D1          ; Reached LEN?
+000014FE  6DD6                     612      BLT     CSC_LOOP
+00001500                           613  
+00001500                           614  CSC_DONE:
+00001500  4CDF 011F                615      MOVEM.L (SP)+,      D0-D4/A0
+00001504  4E75                     616      RTS
+00001506                           617  
+00001506                           618  CSC_HIT:
+00001506  4CDF 011F                619      MOVEM.L (SP)+,      D0-D4/A0    ; Restore before branching out
+0000150A  4A39 00001CF1            620      TST.B   SHIELD
+00001510  6700 04C4                621      BEQ     DEAD                    ; No shields left: game over
+00001514  5339 00001CF1            622      SUB.B   #1,         SHIELD      ; Spend one shield
+0000151A  6100 0566                623      BSR     PLAY_OPPS               ; Audio cue
+0000151E  4E75                     624      RTS
+00001520                           625  
+00001520                           626  *-----------------------------------------------------------
+00001520                           627  * Subroutine    : Check Food
+00001520                           628  *-----------------------------------------------------------
+00001520                           629  
+00001520                           630  CHECK_FOOD:
+00001520  1239 00001CE4            631      MOVE.B  SNAKE_X,    D1
+00001526  1439 00001CE8            632      MOVE.B  FOOD_X,     D2
+0000152C  B401                     633      CMP.B   D1,         D2
+0000152E  6600 0076                634      BNE     NO_EAT
+00001532                           635  
+00001532  1239 00001CE5            636      MOVE.B  SNAKE_Y,    D1
+00001538  1439 00001CE9            637      MOVE.B  FOOD_Y,     D2
+0000153E  B401                     638      CMP.B   D1,         D2
+00001540  6600 0064                639      BNE     NO_EAT
+00001544                           640  
+00001544  6100 053C                641      BSR     PLAY_OPPS
+00001548  52B9 00001CE0            642      ADD.L   #POINTS,    PLAYER_SCORE
+0000154E  4EB9 00001ADE            643      JSR     PLACEFOOD
+00001554                           644  
+00001554  1239 00001CEF            645      MOVE.B  FUEL,       D1
+0000155A  0601 0014                646      ADD.B   #FUEL_EAT,  D1
+0000155E  B23C 0064                647      CMP.B   #FUEL_MAX,  D1
+00001562  6F00 0006                648      BLE     CF_STORE_FUEL
+00001566  123C 0064                649      MOVE.B  #FUEL_MAX,  D1
+0000156A                           650  
+0000156A                           651  CF_STORE_FUEL:
+0000156A  13C1 00001CEF            652      MOVE.B  D1,         FUEL
+00001570                           653  
+00001570  1239 00001CE7            654      MOVE.B  SNAKE_LEN,  D1
+00001576  B23C 001E                655      CMP.B   #MAX_SNAKE, D1
+0000157A  6C00 0008                656      BGE     CF_NO_GROW
+0000157E  5239 00001CE7            657      ADD.B   #1,         SNAKE_LEN
+00001584                           658  
+00001584                           659  CF_NO_GROW:
+00001584  2239 00001CEA            660      MOVE.L  DELAY_COUNT,D1
+0000158A  0481 00005000            661      SUB.L   #SPEED_INC, D1
+00001590  B2BC 00008000            662      CMP.L   #MIN_DELAY, D1
+00001596  6C00 0008                663      BGE     CF_SPEED_STORE
+0000159A  223C 00008000            664      MOVE.L  #MIN_DELAY, D1
+000015A0                           665  
+000015A0                           666  CF_SPEED_STORE:
+000015A0  23C1 00001CEA            667      MOVE.L  D1,         DELAY_COUNT
+000015A6                           668  
+000015A6                           669  NO_EAT:
+000015A6  4E75                     670      RTS
+000015A8                           671  
+000015A8                           672  *-----------------------------------------------------------
+000015A8                           673  * Subroutine    : Tick Physics
+000015A8                           674  * Description   : All alternative physics systems per tick.
+000015A8                           675  *
+000015A8                           676  *   1. FUEL DECAY (0.5 per tick)
+000015A8                           677  *      FUEL_TICK toggles between 0 and 1 each tick.
+000015A8                           678  *      Fuel is only subtracted on the tick where FUEL_TICK
+000015A8                           679  *      flips to 1. This gives an average drain of exactly
+000015A8                           680  *      0.5 per tick without any floating-point arithmetic.
+000015A8                           681  *
+000015A8                           682  *   2. BOOST TICK
+000015A8                           683  *      Costs BOOST_EXTRA fuel per boosted tick.
+000015A8                           684  *      Deactivates when timer or fuel runs out.
+000015A8                           685  *
+000015A8                           686  *   3. SOLAR FLARE (DYNAMIC EVENT)
+000015A8                           687  *      Four distinct states, tested in priority order:
+000015A8                           688  *
+000015A8                           689  *      FLARE_ACTIVE (state 3):
+000015A8                           690  *        Count down FLARE_TIMER. On expiry, zero FLARE_ACTIVE
+000015A8                           691  *        and load FLARE_COOL_TICKS into FLARE_COOLDOWN.
+000015A8                           692  *
+000015A8                           693  *      FLARE_WARNING (state 2):
+000015A8                           694  *        Count down FLARE_WARN_TIMER. On expiry, clear
+000015A8                           695  *        FLARE_WARNING and activate FLARE_ACTIVE with a
+000015A8                           696  *        full FLARE_TICKS countdown. WARN_FLASH toggles
+000015A8                           697  *        each warning tick to drive the border flash.
+000015A8                           698  *
+000015A8                           699  *      FLARE_COOLDOWN (state 1):
+000015A8                           700  *        Count down FLARE_COOLDOWN. While > 0 no new flare
+000015A8                           701  *        can be triggered. No border change.
+000015A8                           702  *
+000015A8                           703  *      IDLE (state 0):
+000015A8                           704  *        Roll a 1/32 chance each tick. On zero result,
+000015A8                           705  *        start FLARE_WARNING and prime FLARE_WARN_TIMER.
+000015A8                           706  *-----------------------------------------------------------
+000015A8                           707  
+000015A8                           708  TICK_PHYSICS:
+000015A8                           709  
+000015A8                           710      ; --- 1. Fuel Decay at 0.5 per tick ---
+000015A8                           711      ; Toggle FUEL_TICK between 0 and 1 each call.
+000015A8                           712      ; Only drain fuel when it flips to 1 (every other tick).
+000015A8  1239 00001CF0            713      MOVE.B  FUEL_TICK,  D1
+000015AE  0A01 0001                714      EOR.B   #1,         D1          ; Flip low bit: 0->1, 1->0
+000015B2  13C1 00001CF0            715      MOVE.B  D1,         FUEL_TICK
+000015B8  4A01                     716      TST.B   D1
+000015BA  6700 002E                717      BEQ     TP_BOOST                ; This is the 0-tick: skip drain
+000015BE                           718  
+000015BE                           719      ; Drain tick - subtract 1 fuel
+000015BE  1239 00001CEF            720      MOVE.B  FUEL,       D1
+000015C4  5301                     721      SUB.B   #1,         D1
+000015C6  6500 0016                722      BCS     TP_FUEL_EMPTY           ; Underflow: was already 0
+000015CA  13C1 00001CEF            723      MOVE.B  D1,         FUEL
+000015D0  4A39 00001CEF            724      TST.B   FUEL
+000015D6  6700 0006                725      BEQ     TP_FUEL_EMPTY           ; Landed on exactly 0
+000015DA  6000 000E                726      BRA     TP_BOOST
+000015DE                           727  
+000015DE                           728  TP_FUEL_EMPTY:
+000015DE  4239 00001CEF            729      CLR.B   FUEL
+000015E4  4EF9 000019D6            730      JMP     DEAD
+000015EA                           731  
+000015EA                           732      ; --- 2. Boost Tick ---
+000015EA                           733  TP_BOOST:
+000015EA  4A39 00001CF8            734      TST.B   BOOST_ACTIVE
+000015F0  6700 002C                735      BEQ     TP_FLARE_STATE
+000015F4                           736  
+000015F4  1239 00001CEF            737      MOVE.B  FUEL,       D1
+000015FA  B23C 0003                738      CMP.B   #BOOST_EXTRA,D1
+000015FE  6D00 0012                739      BLT     TP_BOOST_OFF
+00001602  5739 00001CEF            740      SUB.B   #BOOST_EXTRA,FUEL
+00001608                           741  
+00001608  5339 00001CF9            742      SUB.B   #1,         BOOST_TIMER
+0000160E  6600 000E                743      BNE     TP_FLARE_STATE
+00001612                           744  
+00001612                           745  TP_BOOST_OFF:
+00001612  4239 00001CF8            746      CLR.B   BOOST_ACTIVE
+00001618  4239 00001CF9            747      CLR.B   BOOST_TIMER
+0000161E                           748  
+0000161E                           749      ; --- 3. Solar Flare state machine ---
+0000161E                           750  TP_FLARE_STATE:
+0000161E                           751  
+0000161E                           752      ; Priority 1: active flare is running
+0000161E  4A39 00001CF2            753      TST.B   FLARE_ACTIVE
+00001624  6700 001E                754      BEQ     TP_CHECK_WARNING
+00001628                           755  
+00001628  5339 00001CF3            756      SUB.B   #1,         FLARE_TIMER
+0000162E  6600 008E                757      BNE     TP_DONE                 ; Still counting down
+00001632  4239 00001CF2            758      CLR.B   FLARE_ACTIVE            ; Flare over
+00001638  13FC 0038 00001CF6       759      MOVE.B  #FLARE_COOL_TICKS,FLARE_COOLDOWN ; Start cooldown
+00001640  6000 007C                760      BRA     TP_DONE
+00001644                           761  
+00001644                           762      ; Priority 2: warning phase is running
+00001644                           763  TP_CHECK_WARNING:
+00001644  4A39 00001CF4            764      TST.B   FLARE_WARNING
+0000164A  6700 003C                765      BEQ     TP_CHECK_COOLDOWN
+0000164E                           766  
+0000164E                           767      ; Toggle the flash flag every warning tick for border flash
+0000164E  1239 00001CF7            768      MOVE.B  WARN_FLASH, D1
+00001654  0A01 0001                769      EOR.B   #1,         D1
+00001658  13C1 00001CF7            770      MOVE.B  D1,         WARN_FLASH
+0000165E                           771  
+0000165E  5339 00001CF5            772      SUB.B   #1,         FLARE_WARN_TIMER
+00001664  6600 0058                773      BNE     TP_DONE                 ; Warning still counting down
+00001668                           774  
+00001668                           775      ; Warning expired: promote to active flare
+00001668  4239 00001CF4            776      CLR.B   FLARE_WARNING
+0000166E  4239 00001CF7            777      CLR.B   WARN_FLASH              ; Stop flash, border goes solid
+00001674  13FC 0001 00001CF2       778      MOVE.B  #1,         FLARE_ACTIVE
+0000167C  13FC 0019 00001CF3       779      MOVE.B  #FLARE_TICKS,FLARE_TIMER
+00001684  6000 0038                780      BRA     TP_DONE
+00001688                           781  
+00001688                           782      ; Priority 3: cooldown is running (block new flares)
+00001688                           783  TP_CHECK_COOLDOWN:
+00001688  4A39 00001CF6            784      TST.B   FLARE_COOLDOWN
+0000168E  6700 000C                785      BEQ     TP_IDLE                 ; Cooldown over: allow new flare
+00001692                           786  
+00001692  5339 00001CF6            787      SUB.B   #1,         FLARE_COOLDOWN ; Tick down cooldown
+00001698  6000 0024                788      BRA     TP_DONE
+0000169C                           789  
+0000169C                           790      ; Priority 4: idle - roll for new flare
+0000169C                           791  TP_IDLE:
+0000169C  4EB9 00001AF8            792      JSR     RANNUM                  ; Returns 0-31 in D2
+000016A2  4A02                     793      TST.B   D2
+000016A4  6600 0018                794      BNE     TP_DONE                 ; Non-zero: no flare this tick
+000016A8                           795  
+000016A8                           796      ; Start the warning phase
+000016A8  13FC 0001 00001CF4       797      MOVE.B  #1,         FLARE_WARNING
+000016B0  13FC 0010 00001CF5       798      MOVE.B  #FLARE_WARN_TICKS,FLARE_WARN_TIMER
+000016B8  4239 00001CF7            799      CLR.B   WARN_FLASH              ; Start flash from 0
+000016BE                           800  
+000016BE                           801  TP_DONE:
+000016BE  4E75                     802      RTS
+000016C0                           803  
+000016C0                           804  *-----------------------------------------------------------
+000016C0                           805  * Subroutine    : Dynamic Delay
+000016C0                           806  * Description   : Halves loop count during boost for speed burst.
+000016C0                           807  *-----------------------------------------------------------
+000016C0                           808  
+000016C0                           809  DYNAMIC_DELAY:
+000016C0  48E7 8000                810      MOVEM.L D0,         -(SP)
+000016C4  2039 00001CEA            811      MOVE.L  DELAY_COUNT,D0
+000016CA                           812  
+000016CA  4A39 00001CF8            813      TST.B   BOOST_ACTIVE
+000016D0  6700 0004                814      BEQ     DD_LOOP
+000016D4  E288                     815      LSR.L   #1,         D0
+000016D6                           816  
+000016D6                           817  DD_LOOP:
+000016D6  4E71                     818      NOP
+000016D8  5380                     819      SUB.L   #1,         D0
+000016DA  66FA                     820      BNE     DD_LOOP
+000016DC  4CDF 0001                821      MOVEM.L (SP)+,      D0
+000016E0  4E75                     822      RTS
+000016E2                           823  
+000016E2                           824  *-----------------------------------------------------------
+000016E2                           825  * Subroutine    : Draw
+000016E2                           826  *-----------------------------------------------------------
+000016E2                           827  
+000016E2                           828  DRAW:
+000016E2  103C 005E                829      MOVE.B  #94,        D0
+000016E6  4E4F                     830      TRAP    #15
+000016E8                           831  
+000016E8  103C 000B                832      MOVE.B  #TC_CURSR_P,D0
+000016EC  323C FF00                833      MOVE.W  #$FF00,     D1
+000016F0  4E4F                     834      TRAP    #15
+000016F2                           835  
+000016F2  6100 0014                836      BSR     DRAW_BORDER
+000016F6  6100 00A2                837      BSR     DRAW_HUD
+000016FA  6100 022A                838      BSR     DRAW_BODY
+000016FE  6100 0276                839      BSR     DRAW_FOOD_CELL
+00001702  6100 0294                840      BSR     DRAW_SNAKE_HEAD
+00001706  4E75                     841      RTS
+00001708                           842  
+00001708                           843  *-----------------------------------------------------------
+00001708                           844  * Subroutine    : Draw Border
+00001708                           845  * Description   : Border colour reflects the flare state machine:
+00001708                           846  *
+00001708                           847  *   IDLE / COOLDOWN  : DARKGREEN  (normal)
+00001708                           848  *   FLARE_WARNING    : alternates YELLOW / DARKGREEN each tick
+00001708                           849  *                      using WARN_FLASH toggle to create a visible
+00001708                           850  *                      flashing alert before controls are reversed
+00001708                           851  *   FLARE_ACTIVE     : solid YELLOW
+00001708                           852  *-----------------------------------------------------------
+00001708                           853  
+00001708                           854  DRAW_BORDER:
+00001708                           855      ; Determine border colour for this frame
+00001708  4A39 00001CF2            856      TST.B   FLARE_ACTIVE
+0000170E  6600 0024                857      BNE     DB_SOLID_YELLOW         ; Active flare: solid yellow
+00001712                           858  
+00001712  4A39 00001CF4            859      TST.B   FLARE_WARNING
+00001718  6700 0010                860      BEQ     DB_NORMAL               ; No warning: normal green
+0000171C                           861  
+0000171C                           862      ; Warning phase: flash based on WARN_FLASH toggle
+0000171C  4A39 00001CF7            863      TST.B   WARN_FLASH
+00001722  6700 0006                864      BEQ     DB_NORMAL               ; Toggle=0: show green this frame
+00001726  6000 000C                865      BRA     DB_SOLID_YELLOW         ; Toggle=1: show yellow this frame
+0000172A                           866  
+0000172A                           867  DB_NORMAL:
+0000172A  223C 00003300            868      MOVE.L  #DARKGREEN, D1
+00001730  6000 0008                869      BRA     DB_SET_COLOR
+00001734                           870  
+00001734                           871  DB_SOLID_YELLOW:
+00001734  223C 0000CCCC            872      MOVE.L  #YELLOW,    D1
+0000173A                           873  
+0000173A                           874  DB_SET_COLOR:
+0000173A  303C 0051                875      MOVE.W  #81,        D0
+0000173E  4E4F                     876      TRAP    #15
+00001740                           877  
+00001740  323C 0000                878      MOVE.W  #0,         D1          ; Top bar
+00001744  343C 0000                879      MOVE.W  #0,         D2
+00001748  363C 0280                880      MOVE.W  #SCREEN_PX, D3
+0000174C  383C 0003                881      MOVE.W  #3,         D4
+00001750  303C 0057                882      MOVE.W  #87,        D0
+00001754  4E4F                     883      TRAP    #15
+00001756                           884  
+00001756  323C 0000                885      MOVE.W  #0,         D1          ; Bottom bar
+0000175A  343C 027D                886      MOVE.W  #637,       D2
+0000175E  363C 0280                887      MOVE.W  #SCREEN_PX, D3
+00001762  383C 0280                888      MOVE.W  #SCREEN_PX, D4
+00001766  303C 0057                889      MOVE.W  #87,        D0
+0000176A  4E4F                     890      TRAP    #15
+0000176C                           891  
+0000176C  323C 0000                892      MOVE.W  #0,         D1          ; Left bar
+00001770  343C 0000                893      MOVE.W  #0,         D2
+00001774  363C 0003                894      MOVE.W  #3,         D3
+00001778  383C 0280                895      MOVE.W  #SCREEN_PX, D4
+0000177C  303C 0057                896      MOVE.W  #87,        D0
+00001780  4E4F                     897      TRAP    #15
+00001782                           898  
+00001782  323C 027D                899      MOVE.W  #637,       D1          ; Right bar
+00001786  343C 0000                900      MOVE.W  #0,         D2
+0000178A  363C 0280                901      MOVE.W  #SCREEN_PX, D3
+0000178E  383C 0280                902      MOVE.W  #SCREEN_PX, D4
+00001792  303C 0057                903      MOVE.W  #87,        D0
+00001796  4E4F                     904      TRAP    #15
+00001798  4E75                     905      RTS
+0000179A                           906  
+0000179A                           907  *-----------------------------------------------------------
+0000179A                           908  * Subroutine    : Draw HUD
+0000179A                           909  * Description   : Text overlay. Flare warning, active flare
+0000179A                           910  *                 and boost messages are each conditional.
+0000179A                           911  *-----------------------------------------------------------
+0000179A                           912  
+0000179A                           913  DRAW_HUD:
+0000179A  4281                     914      CLR.L   D1
+0000179C                           915  
+0000179C                           916      ; Score
+0000179C  103C 000B                917      MOVE.B  #TC_CURSR_P,D0
+000017A0  323C 0201                918      MOVE.W  #$0201,     D1
+000017A4  4E4F                     919      TRAP    #15
+000017A6  43F9 00001C40            920      LEA     SCORE_MSG,  A1
+000017AC  303C 000D                921      MOVE    #13,        D0
+000017B0  4E4F                     922      TRAP    #15
+000017B2                           923  
+000017B2  103C 000B                924      MOVE.B  #TC_CURSR_P,D0
+000017B6  323C 0901                925      MOVE.W  #$0901,     D1
+000017BA  4E4F                     926      TRAP    #15
+000017BC  103C 0003                927      MOVE.B  #03,        D0
+000017C0  2239 00001CE0            928      MOVE.L  PLAYER_SCORE,D1
+000017C6  4E4F                     929      TRAP    #15
+000017C8                           930  
+000017C8                           931      ; Controls reminder
+000017C8  103C 000B                932      MOVE.B  #TC_CURSR_P,D0
+000017CC  323C 2001                933      MOVE.W  #$2001,     D1
+000017D0  4E4F                     934      TRAP    #15
+000017D2  43F9 00001BF4            935      LEA     CTRL_MSG,   A1
+000017D8  303C 000D                936      MOVE    #13,        D0
+000017DC  4E4F                     937      TRAP    #15
+000017DE                           938  
+000017DE                           939      ; X position
+000017DE  103C 000B                940      MOVE.B  #TC_CURSR_P,D0
+000017E2  323C 0202                941      MOVE.W  #$0202,     D1
+000017E6  4E4F                     942      TRAP    #15
+000017E8  43F9 00001C49            943      LEA     X_MSG,      A1
+000017EE  303C 000D                944      MOVE    #13,        D0
+000017F2  4E4F                     945      TRAP    #15
+000017F4                           946  
+000017F4  103C 000B                947      MOVE.B  #TC_CURSR_P,D0
+000017F8  323C 0502                948      MOVE.W  #$0502,     D1
+000017FC  4E4F                     949      TRAP    #15
+000017FE  103C 0003                950      MOVE.B  #03,        D0
+00001802  4281                     951      CLR.L   D1
+00001804  1239 00001CE4            952      MOVE.B  SNAKE_X,    D1
+0000180A  4E4F                     953      TRAP    #15
+0000180C                           954  
+0000180C                           955      ; Y position
+0000180C  103C 000B                956      MOVE.B  #TC_CURSR_P,D0
+00001810  323C 1002                957      MOVE.W  #$1002,     D1
+00001814  4E4F                     958      TRAP    #15
+00001816  43F9 00001C4C            959      LEA     Y_MSG,      A1
+0000181C  303C 000D                960      MOVE    #13,        D0
+00001820  4E4F                     961      TRAP    #15
+00001822                           962  
+00001822  103C 000B                963      MOVE.B  #TC_CURSR_P,D0
+00001826  323C 1302                964      MOVE.W  #$1302,     D1
+0000182A  4E4F                     965      TRAP    #15
+0000182C  103C 0003                966      MOVE.B  #03,        D0
+00001830  4281                     967      CLR.L   D1
+00001832  1239 00001CE5            968      MOVE.B  SNAKE_Y,    D1
+00001838  4E4F                     969      TRAP    #15
+0000183A                           970  
+0000183A                           971      ; Snake length
+0000183A  103C 000B                972      MOVE.B  #TC_CURSR_P,D0
+0000183E  323C 0203                973      MOVE.W  #$0203,     D1
+00001842  4E4F                     974      TRAP    #15
+00001844  43F9 00001C4F            975      LEA     LEN_MSG,    A1
+0000184A  303C 000D                976      MOVE    #13,        D0
+0000184E  4E4F                     977      TRAP    #15
+00001850                           978  
+00001850  103C 000B                979      MOVE.B  #TC_CURSR_P,D0
+00001854  323C 0803                980      MOVE.W  #$0803,     D1
+00001858  4E4F                     981      TRAP    #15
+0000185A  103C 0003                982      MOVE.B  #03,        D0
+0000185E  4281                     983      CLR.L   D1
+00001860  1239 00001CE7            984      MOVE.B  SNAKE_LEN,  D1
+00001866  4E4F                     985      TRAP    #15
+00001868                           986  
+00001868                           987      ; Fuel
+00001868  103C 000B                988      MOVE.B  #TC_CURSR_P,D0
+0000186C  323C 0204                989      MOVE.W  #$0204,     D1
+00001870  4E4F                     990      TRAP    #15
+00001872  43F9 00001C56            991      LEA     FUEL_MSG,   A1
+00001878  303C 000D                992      MOVE    #13,        D0
+0000187C  4E4F                     993      TRAP    #15
+0000187E                           994  
+0000187E  103C 000B                995      MOVE.B  #TC_CURSR_P,D0
+00001882  323C 0904                996      MOVE.W  #$0904,     D1
+00001886  4E4F                     997      TRAP    #15
+00001888  103C 0003                998      MOVE.B  #03,        D0
+0000188C  4281                     999      CLR.L   D1
+0000188E  1239 00001CEF           1000      MOVE.B  FUEL,       D1
+00001894  4E4F                    1001      TRAP    #15
+00001896                          1002  
+00001896                          1003      ; Shield
+00001896  103C 000B               1004      MOVE.B  #TC_CURSR_P,D0
+0000189A  323C 0205               1005      MOVE.W  #$0205,     D1
+0000189E  4E4F                    1006      TRAP    #15
+000018A0  43F9 00001C5F           1007      LEA     SHLD_MSG,   A1
+000018A6  303C 000D               1008      MOVE    #13,        D0
+000018AA  4E4F                    1009      TRAP    #15
+000018AC                          1010  
+000018AC  103C 000B               1011      MOVE.B  #TC_CURSR_P,D0
+000018B0  323C 0905               1012      MOVE.W  #$0905,     D1
+000018B4  4E4F                    1013      TRAP    #15
+000018B6  103C 0003               1014      MOVE.B  #03,        D0
+000018BA  4281                    1015      CLR.L   D1
+000018BC  1239 00001CF1           1016      MOVE.B  SHIELD,     D1
+000018C2  4E4F                    1017      TRAP    #15
+000018C4                          1018  
+000018C4                          1019      ; Solar Flare INCOMING warning (during warning phase only)
+000018C4  4A39 00001CF4           1020      TST.B   FLARE_WARNING
+000018CA  6700 0018               1021      BEQ     HUD_NO_WARNING
+000018CE  103C 000B               1022      MOVE.B  #TC_CURSR_P,D0
+000018D2  323C 2004               1023      MOVE.W  #$2004,     D1          ; Col 32, Row 4
+000018D6  4E4F                    1024      TRAP    #15
+000018D8  43F9 00001C68           1025      LEA     FLARE_WARN_MSG,A1
+000018DE  303C 000D               1026      MOVE    #13,        D0
+000018E2  4E4F                    1027      TRAP    #15
+000018E4                          1028  
+000018E4                          1029  HUD_NO_WARNING:
+000018E4                          1030      ; Solar Flare ACTIVE message (during active phase only)
+000018E4  4A39 00001CF2           1031      TST.B   FLARE_ACTIVE
+000018EA  6700 0018               1032      BEQ     HUD_NO_FLARE
+000018EE  103C 000B               1033      MOVE.B  #TC_CURSR_P,D0
+000018F2  323C 2004               1034      MOVE.W  #$2004,     D1          ; Same row, replaces warning text
+000018F6  4E4F                    1035      TRAP    #15
+000018F8  43F9 00001C81           1036      LEA     FLARE_MSG,  A1
+000018FE  303C 000D               1037      MOVE    #13,        D0
+00001902  4E4F                    1038      TRAP    #15
+00001904                          1039  
+00001904                          1040  HUD_NO_FLARE:
+00001904                          1041      ; Boost active indicator
+00001904  4A39 00001CF8           1042      TST.B   BOOST_ACTIVE
+0000190A  6700 0018               1043      BEQ     HUD_NO_BOOST
+0000190E  103C 000B               1044      MOVE.B  #TC_CURSR_P,D0
+00001912  323C 2005               1045      MOVE.W  #$2005,     D1          ; Col 32, Row 5
+00001916  4E4F                    1046      TRAP    #15
+00001918  43F9 00001CA5           1047      LEA     BOOST_MSG,  A1
+0000191E  303C 000D               1048      MOVE    #13,        D0
+00001922  4E4F                    1049      TRAP    #15
+00001924                          1050  
+00001924                          1051  HUD_NO_BOOST:
+00001924  4E75                    1052      RTS
+00001926                          1053  
+00001926                          1054  *-----------------------------------------------------------
+00001926                          1055  * Subroutine    : Draw Body
+00001926                          1056  *-----------------------------------------------------------
+00001926                          1057  
+00001926                          1058  DRAW_BODY:
+00001926  48E7 FF80               1059      MOVEM.L D0-D7/A0,   -(SP)
+0000192A                          1060  
+0000192A  4285                    1061      CLR.L   D5
+0000192C  1A39 00001CE7           1062      MOVE.B  SNAKE_LEN,  D5
+00001932  BA3C 0002               1063      CMP.B   #2,         D5
+00001936  6D00 0038               1064      BLT     DRAW_BODY_DONE
+0000193A                          1065  
+0000193A  303C 0051               1066      MOVE.W  #81,        D0
+0000193E  223C 0000CC00           1067      MOVE.L  #SNAKEGREEN,D1
+00001944  4E4F                    1068      TRAP    #15
+00001946                          1069  
+00001946  1C3C 0001               1070      MOVE.B  #1,         D6
+0000194A                          1071  
+0000194A                          1072  DRAW_BODY_LOOP:
+0000194A  4287                    1073      CLR.L   D7
+0000194C  1E06                    1074      MOVE.B  D6,         D7
+0000194E                          1075  
+0000194E  41F9 00001CFA           1076      LEA     BODY_X,     A0
+00001954  D0C7                    1077      ADDA.W  D7,         A0
+00001956  4281                    1078      CLR.L   D1
+00001958  1210                    1079      MOVE.B  (A0),       D1
+0000195A                          1080  
+0000195A  41F9 00001D18           1081      LEA     BODY_Y,     A0
+00001960  D0C7                    1082      ADDA.W  D7,         A0
+00001962  4282                    1083      CLR.L   D2
+00001964  1410                    1084      MOVE.B  (A0),       D2
+00001966                          1085  
+00001966  6100 0052               1086      BSR     DRAW_CELL
+0000196A                          1087  
+0000196A  5206                    1088      ADD.B   #1,         D6
+0000196C  BC05                    1089      CMP.B   D5,         D6
+0000196E  6DDA                    1090      BLT     DRAW_BODY_LOOP
+00001970                          1091  
+00001970                          1092  DRAW_BODY_DONE:
+00001970  4CDF 01FF               1093      MOVEM.L (SP)+,      D0-D7/A0
+00001974  4E75                    1094      RTS
+00001976                          1095  
+00001976                          1096  *-----------------------------------------------------------
+00001976                          1097  * Subroutine    : Draw Food Cell
+00001976                          1098  *-----------------------------------------------------------
+00001976                          1099  
+00001976                          1100  DRAW_FOOD_CELL:
+00001976  303C 0051               1101      MOVE.W  #81,        D0
+0000197A  223C 000000CC           1102      MOVE.L  #RED,       D1
+00001980  4E4F                    1103      TRAP    #15
+00001982  4281                    1104      CLR.L   D1
+00001984  4282                    1105      CLR.L   D2
+00001986  1239 00001CE8           1106      MOVE.B  FOOD_X,     D1
+0000198C  1439 00001CE9           1107      MOVE.B  FOOD_Y,     D2
+00001992  6100 0026               1108      BSR     DRAW_CELL
+00001996  4E75                    1109      RTS
+00001998                          1110  
+00001998                          1111  *-----------------------------------------------------------
+00001998                          1112  * Subroutine    : Draw Snake Head
+00001998                          1113  *-----------------------------------------------------------
+00001998                          1114  
+00001998                          1115  DRAW_SNAKE_HEAD:
+00001998  303C 0051               1116      MOVE.W  #81,        D0
+0000199C  223C 00FFFFFF           1117      MOVE.L  #WHITE,     D1
+000019A2  4E4F                    1118      TRAP    #15
+000019A4  4281                    1119      CLR.L   D1
+000019A6  4282                    1120      CLR.L   D2
+000019A8  1239 00001CE4           1121      MOVE.B  SNAKE_X,    D1
+000019AE  1439 00001CE5           1122      MOVE.B  SNAKE_Y,    D2
+000019B4  6100 0004               1123      BSR     DRAW_CELL
+000019B8  4E75                    1124      RTS
+000019BA                          1125  
+000019BA                          1126  *-----------------------------------------------------------
+000019BA                          1127  * Subroutine    : Draw Cell
+000019BA                          1128  * Description   : 20x20 pixel filled rectangle at grid (D1, D2).
+000019BA                          1129  *                 Caller sets fill colour before calling.
+000019BA                          1130  *-----------------------------------------------------------
+000019BA                          1131  
+000019BA                          1132  DRAW_CELL:
+000019BA  C2FC 0014               1133      MULU    #CELL_SIZE, D1
+000019BE  C4FC 0014               1134      MULU    #CELL_SIZE, D2
+000019C2  3601                    1135      MOVE.W  D1,         D3
+000019C4  3802                    1136      MOVE.W  D2,         D4
+000019C6  0643 0014               1137      ADD.W   #CELL_SIZE, D3
+000019CA  0644 0014               1138      ADD.W   #CELL_SIZE, D4
+000019CE  303C 0057               1139      MOVE.W  #87,        D0
+000019D2  4E4F                    1140      TRAP    #15
+000019D4  4E75                    1141      RTS
+000019D6                          1142  
+000019D6                          1143  *-----------------------------------------------------------
+000019D6                          1144  * Subroutine    : Dead
+000019D6                          1145  *-----------------------------------------------------------
+000019D6                          1146  
+000019D6                          1147  DEAD:
+000019D6  6100 00AA               1148      BSR     PLAY_OPPS
+000019DA                          1149  
+000019DA  3E3C 0003               1150      MOVE.W  #3,         D7
+000019DE                          1151  
+000019DE                          1152  DEAD_FLASH:
+000019DE  303C 0051               1153      MOVE.W  #81,        D0
+000019E2  223C 000000CC           1154      MOVE.L  #RED,       D1
+000019E8  4E4F                    1155      TRAP    #15
+000019EA  4EB9 00001AA8           1156      JSR     SCREENFLASH
+000019F0  4EB9 00001AC8           1157      JSR     DELAY
+000019F6                          1158  
+000019F6  103C 000B               1159      MOVE.B  #TC_CURSR_P,D0
+000019FA  323C FF00               1160      MOVE.W  #$FF00,     D1
+000019FE  4E4F                    1161      TRAP    #15
+00001A00  4EB9 00001AC8           1162      JSR     DELAY
+00001A06                          1163  
+00001A06  51CF FFD6               1164      DBRA    D7,         DEAD_FLASH
+00001A0A                          1165  
+00001A0A  103C 000B               1166      MOVE.B  #TC_CURSR_P,D0
+00001A0E  323C 0D0D               1167      MOVE.W  #$0D0D,     D1
+00001A12  4E4F                    1168      TRAP    #15
+00001A14  43F9 00001CB8           1169      LEA     DEAD_MSG,   A1
+00001A1A  303C 000D               1170      MOVE    #13,        D0
+00001A1E  4E4F                    1171      TRAP    #15
+00001A20                          1172  
+00001A20  103C 000B               1173      MOVE.B  #TC_CURSR_P,D0
+00001A24  323C 0D0E               1174      MOVE.W  #$0D0E,     D1
+00001A28  4E4F                    1175      TRAP    #15
+00001A2A  43F9 00001C40           1176      LEA     SCORE_MSG,  A1
+00001A30  303C 000D               1177      MOVE    #13,        D0
+00001A34  4E4F                    1178      TRAP    #15
+00001A36                          1179  
+00001A36  103C 000B               1180      MOVE.B  #TC_CURSR_P,D0
+00001A3A  323C 160E               1181      MOVE.W  #$160E,     D1
+00001A3E  4E4F                    1182      TRAP    #15
+00001A40  103C 0003               1183      MOVE.B  #03,        D0
+00001A44  2239 00001CE0           1184      MOVE.L  PLAYER_SCORE,D1
+00001A4A  4E4F                    1185      TRAP    #15
+00001A4C                          1186  
+00001A4C  FFFF FFFF               1187      SIMHALT
+00001A50                          1188  
+00001A50                          1189  *-----------------------------------------------------------
+00001A50                          1190  * Subroutine    : Exit
+00001A50                          1191  *-----------------------------------------------------------
+00001A50                          1192  
+00001A50                          1193  EXIT:
+00001A50  103C 000B               1194      MOVE.B  #TC_CURSR_P,D0
+00001A54  323C 0D0D               1195      MOVE.W  #$0D0D,     D1
+00001A58  4E4F                    1196      TRAP    #15
+00001A5A  43F9 00001CCA           1197      LEA     EXIT_MSG,   A1
+00001A60  303C 000D               1198      MOVE    #13,        D0
+00001A64  4E4F                    1199      TRAP    #15
+00001A66  103C 0009               1200      MOVE.B  #TC_EXIT,   D0
+00001A6A  4E4F                    1201      TRAP    #15
+00001A6C  FFFF FFFF               1202      SIMHALT
+00001A70                          1203  
+00001A70                          1204  *-----------------------------------------------------------
+00001A70                          1205  * Subroutines   : Sound
+00001A70                          1206  *-----------------------------------------------------------
+00001A70                          1207  
+00001A70                          1208  OPPS_LOAD:
+00001A70  43F9 00001CD6           1209      LEA     OPPS_WAV,   A1
+00001A76  323C 0002               1210      MOVE    #OPPS_INDEX,D1
+00001A7A  303C 0047               1211      MOVE    #71,        D0
+00001A7E  4E4F                    1212      TRAP    #15
+00001A80  4E75                    1213      RTS
+00001A82                          1214  
+00001A82                          1215  PLAY_OPPS:
+00001A82  323C 0002               1216      MOVE    #OPPS_INDEX,D1
+00001A86  303C 0048               1217      MOVE    #72,        D0
+00001A8A  4E4F                    1218      TRAP    #15
+00001A8C  4E75                    1219      RTS
+00001A8E                          1220  
+00001A8E                          1221  *-----------------------------------------------------------
+00001A8E                          1222  * Subroutine    : Set Screen
+00001A8E                          1223  *-----------------------------------------------------------
+00001A8E                          1224  
+00001A8E                          1225  SETSCREEN:
+00001A8E  48A7 C000               1226      MOVEM   D0-D1,      -(SP)
+00001A92  303C 0021               1227      MOVE.W  #33,        D0
+00001A96  323C 0280               1228      MOVE.W  #640,       D1
+00001A9A  4841                    1229      SWAP    D1
+00001A9C  323C 0280               1230      MOVE.W  #640,       D1
+00001AA0  4E4F                    1231      TRAP    #15
+00001AA2  4C9F 0003               1232      MOVEM   (SP)+,      D0-D1
+00001AA6  4E75                    1233      RTS
+00001AA8                          1234  
+00001AA8                          1235  *-----------------------------------------------------------
+00001AA8                          1236  * Subroutine    : Screen Flash
+00001AA8                          1237  *-----------------------------------------------------------
+00001AA8                          1238  
+00001AA8                          1239  SCREENFLASH:
+00001AA8  48A7 F800               1240      MOVEM   D0-D4,      -(SP)
+00001AAC  303C 0057               1241      MOVE.W  #87,        D0
+00001AB0  323C 0000               1242      MOVE.W  #0,         D1
+00001AB4  343C 0000               1243      MOVE.W  #0,         D2
+00001AB8  363C 0280               1244      MOVE.W  #SCREEN_PX, D3
+00001ABC  383C 0280               1245      MOVE.W  #SCREEN_PX, D4
+00001AC0  4E4F                    1246      TRAP    #15
+00001AC2  4C9F 001F               1247      MOVEM   (SP)+,      D0-D4
+00001AC6  4E75                    1248      RTS
+00001AC8                          1249  
+00001AC8                          1250  *-----------------------------------------------------------
+00001AC8                          1251  * Subroutine    : Delay
+00001AC8                          1252  *-----------------------------------------------------------
+00001AC8                          1253  
+00001AC8                          1254  DELAY:
+00001AC8  48E7 8000               1255      MOVEM.L D0,         -(SP)
+00001ACC  2039 00001CEA           1256      MOVE.L  DELAY_COUNT,D0
+00001AD2                          1257  DLOOP:
+00001AD2  4E71                    1258      NOP
+00001AD4  5380                    1259      SUB.L   #1,         D0
+00001AD6  66FA                    1260      BNE     DLOOP
+00001AD8  4CDF 0001               1261      MOVEM.L (SP)+,      D0
+00001ADC  4E75                    1262      RTS
+00001ADE                          1263  
+00001ADE                          1264  *-----------------------------------------------------------
+00001ADE                          1265  * Subroutine    : Place Food
+00001ADE                          1266  *-----------------------------------------------------------
+00001ADE                          1267  
+00001ADE                          1268  PLACEFOOD:
+00001ADE  4EB9 00001AF8           1269      JSR     RANNUM
+00001AE4  13C2 00001CE8           1270      MOVE.B  D2,         FOOD_X
+00001AEA  4EB9 00001AF8           1271      JSR     RANNUM
+00001AF0  13C2 00001CE9           1272      MOVE.B  D2,         FOOD_Y
+00001AF6  4E75                    1273      RTS
+00001AF8                          1274  
+00001AF8                          1275  *-----------------------------------------------------------
+00001AF8                          1276  * Subroutine    : Random Number
+00001AF8                          1277  * Description   : Returns 0-31 in D2. CLR.L D2 before byte
+00001AF8                          1278  *                 move prevents DIVU overflow (food spawn fix).
+00001AF8                          1279  *-----------------------------------------------------------
+00001AF8                          1280  
+00001AF8                          1281  RANNUM:
+00001AF8  48A7 C000               1282      MOVEM   D0-D1,      -(SP)
+00001AFC  303C 0008               1283      MOVE.W  #8,         D0
+00001B00  4E4F                    1284      TRAP    #15
+00001B02  4282                    1285      CLR.L   D2
+00001B04  1401                    1286      MOVE.B  D1,         D2
+00001B06  2202                    1287      MOVE.L  D2,         D1
+00001B08  82FC 0008               1288      DIVU    #8,         D1
+00001B0C  3401                    1289      MOVE.W  D1,         D2
+00001B0E  4C9F 0003               1290      MOVEM   (SP)+,      D0-D1
+00001B12  4E75                    1291      RTS
+00001B14                          1292  
+00001B14                          1293  *-----------------------------------------------------------
+00001B14                          1294  * Section       : Messages
+00001B14                          1295  *-----------------------------------------------------------
+00001B14                          1296  
+00001B14= 3D 3D 3D 20 53 4E ...   1297  DIFF_TITLE_MSG  DC.B    '=== SNAKE GAME ===',0
+00001B27= 53 65 6C 65 63 74 ...   1298  DIFF_SEL_MSG    DC.B    'Select Difficulty :',0
+00001B3B= 31 20 3D 20 45 61 ...   1299  DIFF_EASY_MSG   DC.B    '1 = Easy    [ 3 Shields | Full Fuel | Slow  ]',0
+00001B69= 32 20 3D 20 4D 65 ...   1300  DIFF_MED_MSG    DC.B    '2 = Medium  [ 2 Shields | 75% Fuel  | Med   ]',0
+00001B97= 33 20 3D 20 48 61 ...   1301  DIFF_HARD_MSG   DC.B    '3 = Hard    [ 1 Shield  | 50% Fuel  | Fast  ]',0
+00001BC5= 50 72 65 73 73 20 ...   1302  DIFF_PRMPT_MSG  DC.B    'Press 1, 2 or 3 to begin...',0
+00001BE1                          1303  
+00001BE1= 2A 2A 2A 20 53 4E ...   1304  TITLE_MSG       DC.B    '*** SNAKE GAME ***',0
+00001BF4= 41 72 72 6F 77 73 ...   1305  CTRL_MSG        DC.B    'Arrows:Move  Space:Boost  Q:Quit',0
+00001C15= 53 70 61 63 65 20 ...   1306  BOOST_TIP_MSG   DC.B    'Space = Boost toggle (costs Fuel)',0
+00001C37= 51 20 3A 20 51 75 ...   1307  QUIT_MSG        DC.B    'Q : Quit',0
+00001C40                          1308  
+00001C40= 53 63 6F 72 65 20 ...   1309  SCORE_MSG       DC.B    'Score : ',0
+00001C49= 58 3A 00                1310  X_MSG           DC.B    'X:',0
+00001C4C= 59 3A 00                1311  Y_MSG           DC.B    'Y:',0
+00001C4F= 4C 65 6E 20 3A 20 00    1312  LEN_MSG         DC.B    'Len : ',0
+00001C56= 46 75 65 6C 20 20 ...   1313  FUEL_MSG        DC.B    'Fuel  : ',0
+00001C5F= 53 68 6C 64 20 20 ...   1314  SHLD_MSG        DC.B    'Shld  : ',0
+00001C68= 21 20 53 4F 4C 41 ...   1315  FLARE_WARN_MSG  DC.B    '! SOLAR FLARE INCOMING !',0
+00001C81= 21 20 53 4F 4C 41 ...   1316  FLARE_MSG       DC.B    '! SOLAR FLARE - Controls Reversed !',0
+00001CA5= 3E 3E 20 42 4F 4F ...   1317  BOOST_MSG       DC.B    '>> BOOST ACTIVE <<',0
+00001CB8= 2A 2A 2A 20 47 41 ...   1318  DEAD_MSG        DC.B    '*** GAME OVER ***',0
+00001CCA= 45 78 69 74 69 6E ...   1319  EXIT_MSG        DC.B    'Exiting....',0
+00001CD6                          1320  
+00001CD6                          1321  *-----------------------------------------------------------
+00001CD6                          1322  * Section       : Sound Files
+00001CD6                          1323  *-----------------------------------------------------------
+00001CD6                          1324  
+00001CD6= 6F 70 70 73 2E 77 ...   1325  OPPS_WAV        DC.B    'opps.wav',0
+00001CDF                          1326  
+00001CDF                          1327  *-----------------------------------------------------------
+00001CDF                          1328  * Section       : Game Data
+00001CDF                          1329  *-----------------------------------------------------------
+00001CDF                          1330  
+00001CE0                          1331  PLAYER_SCORE    DS.L    1           ; Player score
+00001CE4                          1332  SNAKE_X         DS.B    1           ; Head column      (0-31)
+00001CE5                          1333  SNAKE_Y         DS.B    1           ; Head row         (0-31)
+00001CE6                          1334  SNAKE_DIR       DS.B    1           ; Direction        (1=L 2=U 3=R 4=D)
+00001CE7                          1335  SNAKE_LEN       DS.B    1           ; Length           (1-30)
+00001CE8                          1336  FOOD_X          DS.B    1           ; Food column      (0-31)
+00001CE9                          1337  FOOD_Y          DS.B    1           ; Food row         (0-31)
+00001CEA                          1338  DELAY_COUNT     DS.L    1           ; Speed delay count
+00001CEE                          1339  DIFFICULTY      DS.B    1           ; Chosen difficulty (1/2/3)
+00001CEF                          1340  FUEL            DS.B    1           ; Fuel              (0-100)
+00001CF0                          1341  FUEL_TICK       DS.B    1           ; Half-rate toggle  (0/1)
+00001CF1                          1342  SHIELD          DS.B    1           ; Shields           (0-3)
+00001CF2                          1343  FLARE_ACTIVE    DS.B    1           ; Flare active flag (0/1)
+00001CF3                          1344  FLARE_TIMER     DS.B    1           ; Active flare ticks remaining
+00001CF4                          1345  FLARE_WARNING   DS.B    1           ; Warning phase flag (0/1)
+00001CF5                          1346  FLARE_WARN_TIMER DS.B   1           ; Warning ticks remaining
+00001CF6                          1347  FLARE_COOLDOWN  DS.B    1           ; Cooldown ticks remaining
+00001CF7                          1348  WARN_FLASH      DS.B    1           ; Border flash toggle (0/1)
+00001CF8                          1349  BOOST_ACTIVE    DS.B    1           ; Boost flag        (0/1)
+00001CF9                          1350  BOOST_TIMER     DS.B    1           ; Boost ticks remaining
+00001CFA                          1351  BODY_X          DS.B    30          ; Body column array [0]=head
+00001D18                          1352  BODY_Y          DS.B    30          ; Body row array    [0]=head
+00001D36                          1353  
+00001D36                          1354      END     START
+
+No errors detected
+No warnings generated
+
+
+SYMBOL TABLE INFORMATION
+Symbol-name         Value
+-------------------------
+APD_EASY            11EA
+APD_HARD            11B2
+APD_MED             11CE
+APPLY_DIFFICULTY    119C
+BODY_X              1CFA
+BODY_Y              1D18
+BOOST_ACTIVE        1CF8
+BOOST_EXTRA         3
+BOOST_MSG           1CA5
+BOOST_TICKS         5
+BOOST_TIMER         1CF9
+BOOST_TIP_MSG       1C15
+CELL_SIZE           14
+CF_NO_GROW          1584
+CF_SPEED_STORE      15A0
+CF_STORE_FUEL       156A
+CHECK_BOUNDS_WRAP   1426
+CHECK_FOOD          1520
+CHECK_SELF_COLLISION  14AE
+CSC_DONE            1500
+CSC_HIT             1506
+CSC_LOOP            14D6
+CSC_NEXT            14FA
+CTRL_MSG            1BF4
+DARKGREEN           3300
+DB_NORMAL           172A
+DB_SET_COLOR        173A
+DB_SOLID_YELLOW     1734
+DD_LOOP             16D6
+DEAD                19D6
+DEAD_FLASH          19DE
+DEAD_MSG            1CB8
+DELAY               1AC8
+DELAY_COUNT         1CEA
+DIFFICULTY          1CEE
+DIFFICULTY_SELECT   10C0
+DIFF_CHOOSE_1       1170
+DIFF_CHOOSE_2       117C
+DIFF_CHOOSE_3       1188
+DIFF_DONE           1190
+DIFF_EASY           1
+DIFF_EASY_MSG       1B3B
+DIFF_HARD           3
+DIFF_HARD_MSG       1B97
+DIFF_MED            2
+DIFF_MED_MSG        1B69
+DIFF_PRMPT_MSG      1BC5
+DIFF_SEL_MSG        1B27
+DIFF_TITLE_MSG      1B14
+DIFF_WAIT           114E
+DIR_DOWN            4
+DIR_LEFT            1
+DIR_RIGHT           3
+DIR_UP              2
+DLOOP               1AD2
+DLY_EASY            3FFFF
+DLY_HARD            10000
+DLY_MED             25000
+DO_MOVE_DOWN        13B2
+DO_MOVE_LEFT        1394
+DO_MOVE_RIGHT       13A8
+DO_MOVE_UP          139E
+DRAW                16E2
+DRAW_BODY           1926
+DRAW_BODY_DONE      1970
+DRAW_BODY_LOOP      194A
+DRAW_BORDER         1708
+DRAW_CELL           19BA
+DRAW_FOOD_CELL      1976
+DRAW_HUD            179A
+DRAW_SNAKE_HEAD     1998
+DRAW_TITLE          1206
+DYNAMIC_DELAY       16C0
+ESCAPE_HI           51
+ESCAPE_LO           71
+EXIT                1A50
+EXIT_MSG            1CCA
+FLARE_ACTIVE        1CF2
+FLARE_COOLDOWN      1CF6
+FLARE_COOL_TICKS    38
+FLARE_MSG           1C81
+FLARE_TICKS         19
+FLARE_TIMER         1CF3
+FLARE_WARNING       1CF4
+FLARE_WARN_MSG      1C68
+FLARE_WARN_TICKS    10
+FLARE_WARN_TIMER    1CF5
+FOOD_X              1CE8
+FOOD_Y              1CE9
+FUEL                1CEF
+FUEL_EASY           64
+FUEL_EAT            14
+FUEL_HARD           32
+FUEL_MAX            64
+FUEL_MED            4B
+FUEL_MSG            1C56
+FUEL_TICK           1CF0
+GAME                109A
+GAMELOOP            109E
+GRID_MAX            20
+HUD_NO_BOOST        1924
+HUD_NO_FLARE        1904
+HUD_NO_WARNING      18E4
+INITIALISE          1000
+LEN_MSG             1C4F
+MAX_SNAKE           1E
+MIN_DELAY           8000
+NO_EAT              15A6
+OPPS_INDEX          2
+OPPS_LOAD           1A70
+OPPS_WAV            1CD6
+PLACEFOOD           1ADE
+PLAYER_SCORE        1CE0
+PLAY_OPPS           1A82
+POINTS              1
+QUIT_MSG            1C37
+RANNUM              1AF8
+READ_KEYS           1282
+RED                 CC
+RK_BOOST            12F2
+RK_BOOST_OFF        131A
+RK_DONE             12C8
+RK_DOWN             12E8
+RK_LEFT             12CA
+RK_RIGHT            12DE
+RK_UP               12D4
+SCORE_MSG           1C40
+SCREENFLASH         1AA8
+SCREEN_PX           280
+SETSCREEN           1A8E
+SHIELD              1CF1
+SHIFT_BODY          13CE
+SHIFT_BODY_DONE     1420
+SHIFT_LOOP_B        13E6
+SHLD_EASY           3
+SHLD_HARD           1
+SHLD_MED            2
+SHLD_MSG            1C5F
+SNAKEGREEN          CC00
+SNAKE_DIR           1CE6
+SNAKE_LEN           1CE7
+SNAKE_X             1CE4
+SNAKE_Y             1CE5
+SPACE               20
+SPEED_INC           5000
+START               1000
+TC_CURSR_P          B
+TC_DBL_BUF          5C
+TC_EXIT             9
+TC_KEYCODE          13
+TC_SCREEN           21
+TICK_PHYSICS        15A8
+TITLE_MSG           1BE1
+TP_BOOST            15EA
+TP_BOOST_OFF        1612
+TP_CHECK_COOLDOWN   1688
+TP_CHECK_WARNING    1644
+TP_DONE             16BE
+TP_FLARE_STATE      161E
+TP_FUEL_EMPTY       15DE
+TP_IDLE             169C
+UPDATE              1328
+UPDATE_MOVE         1370
+UPDATE_STORE_HEAD   13B8
+UPD_FLIP_D          136C
+UPD_FLIP_L          1364
+UPD_FLIP_R          135C
+WALL_PENALTY        1484
+WARN_FLASH          1CF7
+WHITE               FFFFFF
+WRAP_BOTTOM         1470
+WRAP_LEFT           1464
+WRAP_RIGHT          1458
+WRAP_TOP            147C
+X_MSG               1C49
+YELLOW              CCCC
+Y_MSG               1C4C
